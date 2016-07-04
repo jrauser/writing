@@ -1,0 +1,517 @@
+---
+title: "You CAN average percentiles!"
+author: "John Rauser"
+date: "July 2016"
+output: html_document
+---
+
+... at least some of the time.
+
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(purrr)
+set.seed(7777)
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE)
+```
+
+## "You can't meaningfully average percentiles."
+
+From time to time I hear people say "You [can't](http://latencytipoftheday.blogspot.com/2014/06/latencytipoftheday-you-cant-average.html) [meaningfully](https://www.vividcortex.com/blog/why-percentiles-dont-work-the-way-you-think) [average](https://twitter.com/heinrichhartman/status/748355170040352768) [percentiles](http://www.circonus.com/problem-math/)."  This has always irritated me.  Last week I [said as much](https://twitter.com/danslimmon/status/748295758827315201) [on twitter](https://twitter.com/jrauser/status/748573025159655424).  
+
+This document is an attempt to explain my position.  It is also an attempt to teach statistical thinking by example, and to demonstrate using the R language for data analysis.  This document was written in RMarkdown, AND YOU CAN DOWNLOAD THE SOURCE HERE AND PLAY WITH IT YOURSELF.
+
+If the authors linked above had said "In an operational context, averaging percentiles is a bad idea," or more simply, "Averaging percentiles is very dangerous," I would have no quarrel, but by making such extreme statements they shut down opportunities for statistical thinking, and [as someone who cares a great deal about statistical education](https://www.youtube.com/watch?v=5Dnw46eC-0o), that makes me sad.
+
+The average is just a statistical tool.  Like any tool it can be used wisely or foolishly.  You can average any data you like, and the average is always "meaningful" in that it has well understood mathematical properties. Whether or not an average is *useful* depends on how your data was generated and what claims you're making about that average.
+
+## What is the analytical task at hand?
+
+What the average of percentiles is *not* is a percentile.  It is certainly true that there is no way to recover the *exact* population percentile from a collection of sample percentiles.  When the authors linked above say that the median of the sample medians is not the population median, they are completely correct.
+
+But when trying to summarize a data set, the question you should always be asking yourself is
+**what is the analytical task at hand**?
+
+The authors above come from the world of operating large fleets of computers (I world I spent many years in), so I'll choose examples from that realm. Let's say that you have a set of machines, each of which has computed its own 90th percentile of service latency over some span of time (an hour, for example), and you want to know the overall 90th percentile across all the machines.  To get the exact 90th percentile, you would need to examine all the raw latency data from all of the machines.  This might be deemed too difficult an engineering feat, or it may well be that the raw data is just gone, and all you have is the 90th percentiles from each host.
+
+Now the truth is that you never really needed to know the exact 90th percentile.  You were always willing to settle for an estimate with some small amount of error.  (I hope this is true, because in a distributed computing environment that is all you can ever achieve.)  Further, let's say you're willing to assume that each of the machines in your fleet is functionally the same, and that the observations are distributed across the fleet randomly, with uniform probability; in technical language, your data is independent and identically distributed (often abbreviated i.i.d.).  In many real fleets, most of the time, this assumption is completely reasonable.  Later on we'll examine what happens when this assumption is violated.
+
+The question then is: **Is the average of the 90th percentiles a good estimator of the overall 90th percentile?**  'Goodness' in this context has a technical definition in statistics, but a big concern is bias.  It's probably a STAT301 exercise to prove that in the general case the average of the percentiles is not an unbiased estimator and is therefore (some might conclude) "bad".  But how bad is it?  How does it break down?
+
+We could do calculus and prove theorems, but that's no fun.  We can code, let's simulate!
+
+## Simulation
+
+We said we were looking at latency data.  Latency data is often roughly gamma distributed, so let's pretend that a [gamma process](https://en.wikipedia.org/wiki/Gamma_distribution) generates our data.  Here's one such process, gamma(3, 1/100):
+
+```{r gamma}
+# Generate a dataset with 100 points from [0, 2000]
+to_plot<-data.frame(x=seq(0,2000,length.out=100)) %>%
+# ... and set y to the density of the gamma distribution at each point
+  mutate(y=dgamma(x,3,1/100)) 
+
+# Plot the curve
+ggplot(to_plot, aes(x,y)) + geom_line() + 
+  xlab("Latency (ms)") + ylab("Density")
+```
+
+In a purely ideal world, if your service has to do three sub-tasks in sequence, and each of sub-tasks has exponentially distributed latency with an average latency of 100ms, this would be the latency distribution of your service.  
+
+Let's draw a sample of 1,000 data points from this ideal distribution and plot a histogram with 50ms bins.
+
+```{r gamma_hist}
+# Draw the sample
+to_plot<-data.frame(latency=rgamma(1000, 3, 1/100))
+# ... and plot a histogram
+ggplot(to_plot, aes(latency))+geom_histogram(binwidth=50)+xlab("Latency(ms)")
+```
+
+So our example service has a latency distribution that is skew, with a mean of 300 milliseconds, and a right tail that stretches out and is sometimes over 1,000 ms.  The true 90th percentile of this process is around 532 ms.
+
+```{r qgamma}
+qgamma(0.9, 3, 1/100)
+```
+
+So now let's start looking at what happens when we have this process distributed across several machines and we try to aggregate the resulting percentiles. 
+
+So far I've been using R like a statistical calculator (which it's quite good at), but it's also a full featured programming language, so I'll start using some of those features just to demonstrate them.
+
+```{r some_functions}
+# Define a function to simulate raw latency data from a single host.  
+# Default to 1,000 points.
+simulate_one_host<-function(n=1000) {
+  rgamma(n, 3, 1/100)
+}
+# Ten sample timings 
+simulate_one_host(10)
+```
+
+We can use the `quantile` function to compute the 90th percentile of a set of data.  Here I simulate 1,000 requests and compute the 90th percentile.  It's not exactly the 532 of the underlying distribution, but it's close.
+
+```{r quantile}
+quantile(simulate_one_host(), 0.9)
+```
+
+Now let's simulate a fleet of hosts.  `replicate` runs a snippet of R code many times, so here I generate ten 90th percentiles, one for each host.
+
+```{r many_hosts}
+host_p90s<-replicate(10, quantile(simulate_one_host(), 0.9))
+host_p90s
+```
+
+Some of them should be above the theoretical 532ms and others should be below.  Most of them should be closer to 532 then further away. And if we take the average of them, we get something close to 532.
+
+```{r first_mean}
+mean(host_p90s)
+```
+
+So maybe this averaging thing ain't so bad? What we really want to know is how close can we usually expect this estimate to be to the true value.  (In technical language, what's the [sampling distribution](https://en.wikipedia.org/wiki/Sampling_distribution)?)  I don't know how to compute this sampling distribution analytically, but I can easily simulate it.  
+
+Here I compute the mean as above 1,000 times and plot a histogram of the results.  The red vertical line is the true population 90th percentile.
+
+```{r many_means}
+# Define a function to simulate a fleet of hosts
+simulate_one_fleet<-function(nhosts=10, obs_per_host=1000, qtile=0.9) {
+  mean(replicate(nhosts, quantile(simulate_one_host(obs_per_host), qtile)))
+}
+
+# Use replicate to simluate 1,000 fleets
+fleet_data<-data.frame(replication=1:1000,
+                       average_of_pctiles=replicate(1000, simulate_one_fleet()))
+
+# Plot the results
+avg_plot<-ggplot(fleet_data,aes(x=average_of_pctiles))+
+  geom_histogram(bins=30)+ 
+  xlab("Average of fleet percentiles")
+
+avg_plot + geom_vline(xintercept=qgamma(0.9, 3, 1/100), color="red")
+```
+
+Wow! This averaging thing is working out great!  We appear to be most likely to get a result near the true population 90th percentile, and only rarely are we more than about 15ms away.
+
+## Yeah, but my data is totally different
+
+"But, but, but," you say, "what if my data is more skew!"
+
+That's certainly a valid concern.  Instead of the gamma distribution, let's sample from a much more extreme distribution, the Pareto distribution.
+
+Here's a histogram of a million draws from pareto(x_m=1, alpha=3).  Pretty dang skew (though it's mean and variance are at least finite for these parameters).  
+
+```{r pareto}
+# Define a function that returns Pareto random variates
+rpareto<-function(n, x_m, alpha) {
+  x_m/(runif(n)^(1/alpha))
+}
+
+# Draw 1,000,000 and plot
+to_plot<-data.frame(x=rpareto(1000000, x_m=1, alpha=3))
+ggplot(to_plot, aes(x))+geom_histogram(bins=50)
+
+# What's the p90?
+pareto_p90<-quantile(to_plot$x, 0.9)
+pareto_p90
+```
+
+So now let's change our hosts to have this latency distribution, and see how we do.
+
+```{r mean_pareto}
+# Redefine what a single host looks like
+simulate_one_host<-function(n=1000) {
+  rpareto(n, x_m=1, alpha=3)
+}
+
+# Use replicate to simluate 1,000 fleets
+fleet_data<-data.frame(replication=1:1000,
+                       average_of_pctiles=replicate(1000, simulate_one_fleet()))
+
+# ... and plot
+avg_plot %+% fleet_data +
+  geom_vline(xintercept=pareto_p90, color="red")
+```
+
+Again, even though our data is now very skew, the average of the 90th percentiles appears to be a decent estimator of the population 90th percentile.
+
+## But you said averaging percentiles is dangerous
+
+So what about all these folks saying you can't average percentiles?  Are they wrong?  Well, not exactly.  This game of averaging percentiles breaks down as we go deeper into the tail of the distribution.  If instead of the 90th percentile of samples of 1,000 from a highly-skew (Pareto) distribution, we average the 99.9th percentiles of samples of 1,000, things don't look so great.
+
+```{r}
+# Find the "true" 99.9th percentiles
+pareto_p999<-quantile(rpareto(1000000, x_m=1, alpha=3), 0.999)
+
+fleet_data<-
+  data.frame(replication=1:1000,
+             average_of_pctiles=replicate(1000,
+                                          simulate_one_fleet(qtile=0.999)))
+
+# ... and plot
+avg_plot %+% fleet_data +
+  geom_vline(xintercept=pareto_p999, color="red")
+```
+
+But if we observed 10,000 samples per host instead of 1,000, things start looking better again, though not great.
+
+```{r}
+fleet_data<-
+  data.frame(replication=1:1000,
+             average_of_pctiles=replicate(1000,
+                                          simulate_one_fleet(obs_per_host=10000,
+                                                             qtile=0.999)))
+
+avg_plot %+% fleet_data +
+  geom_vline(xintercept=pareto_p999, color="red")
+```
+
+So, while in the general case there's no guarantee that the average of percentiles is a decent estimator of the population percentile, under pretty mild conditions it actually works out pretty well.  
+
+I encourage you to try this kind of simulation with your own data and see whether it works or not.  To do that you want to use a technique known as [bootstrapping](https://en.wikipedia.org/wiki/Bootstrapping_(statistics)) to simulate drawing many, many replications of your data.  
+
+## When the average isn't a good estimator
+
+So far I made a key assumption that the analytical task was to estimate the population percentile and that the samples were all generated by the same process (read: your hosts are all behaving identically).  That may well not be the case.  
+
+It could easily be that one of your machines is broken and has much worse latency than the rest, or it might be that half of your machines have more memory and are faster, or that your workload is unevenly spread across machines and some machines get heavier requests (on average).  
+
+In these cases, the average is probably not helpful.  Let's look at how it breaks down.
+
+Here's some code that generates a sample data set of ten hosts, nine of which are "normal" and one which is slow, with 500ms of latency added to each request.
+
+```{r broken}
+simulate_broken_fleet<-function(num_normal=9, num_slow=1, obs_per_host=1000) {
+  data.frame(host=c(rep(letters[1:num_normal],each=obs_per_host),
+                    rep(letters[(num_normal+1):(num_normal+num_slow)], each=obs_per_host)),
+             latency=c(rgamma(obs_per_host*num_normal, 3, 1/100),
+                       rgamma(obs_per_host*num_slow, 3, 1/100)+500))
+}
+fleet_data<-simulate_broken_fleet()
+```
+
+There are many different ways to visualize a data set like this.  For fun (and to show off the power of ggplot and the tidyverse) here are some of them.  You could plot it as a series of box-plots,
+
+```{r boxplot}
+ggplot(fleet_data, aes(x=host, y=latency)) + geom_boxplot()
+```
+
+... as faceted histograms,
+
+```{r faceted_hist}
+ggplot(fleet_data, aes(x=latency)) + geom_histogram(bins=20) + facet_wrap(~host,ncol=5)
+```
+
+... as grouped density estimates,
+
+```{r grp_density}
+ggplot(fleet_data, aes(x=latency, color=host)) + geom_density() 
+```
+
+... or as a set of summary statistics plotted as a parallel coordinates plot.
+
+```{r summarized}
+# Summarize and reshape the data into long form for plotting
+fleet_summary_l <- fleet_data %>%
+  group_by(host) %>%
+  summarize(avg = mean(latency),
+            p50 = quantile(latency, 0.5),
+            p90 = quantile(latency, 0.9),
+            max = max(latency)) %>%
+  gather(metric, value, -host)
+
+ggplot(fleet_summary_l, aes(host, value))+
+  geom_point()+
+  geom_line(aes(group=metric, color=metric))+
+  coord_flip()
+```
+
+In any of these it's easy to see that machine 'j' is an outlier.  
+
+The true 90th percentile of this entire fleet is about 690ms.
+
+```{r broken_p90}
+quantile(fleet_data$latency, 0.9)
+```
+
+So what happens if we find the 90th percentile of each of these hosts and average them?
+
+```{r broken_mean}
+p90s<-fleet_data %>%
+  group_by(host) %>%
+  summarize(p90 = quantile(latency, 0.9))
+mean(p90s$p90)
+```
+
+Oops!  We're way low!  The average now appears to be smoothing over the weird tail effects of this fleet.  Perhaps it was just bad luck... let's examine the sampling distribution by simulating 1,000 such fleets.
+
+```{r}
+# Define a function to simulate a fleet, computes per-host p90s and summarizes the 
+# p90s (by default with the mean).
+summarize_broken_fleet<-function(fun=mean) {
+  p90s<-simulate_broken_fleet() %>%
+    group_by(host) %>%
+    summarize(p90=quantile(latency, 0.9))
+  return(fun(p90s$p90))
+}
+
+# Simulate 1,000 such fleets
+reps<-data.frame(rep=rep(1:1000),
+                 avg_of_p90s=replicate(1000, summarize_broken_fleet()))
+
+# And plot the results
+ggplot(reps, aes(avg_of_p90s)) +
+  geom_histogram(bins=30) +
+  geom_vline(xintercept = 690, color="red") +
+  xlab("Average of p90s")
+```
+
+So averaging percentiles is clearly breaking down.  When some of your fleet is behaving badly the average will tend to smooth over and understate the severity of the problem.
+
+When monitoring a large fleet, the assumption that allowed us to average successfully above breaks down precisely when you wish it wouldn't!  Detecting poorly performing hosts is one of the main goals of fleet monitoring, so you'd like your fleet summaries to be as sensitive as possible, and the average is simply isn't.
+
+Many people will suggest taking the max of the percentiles in this case, which isn't a bad strategy as it will overstate the true fleet-wise 90th percentile.
+
+```{r broken_max}
+# Simulate 1,000 broken fleets and take the max of the per-host 90th percentiles
+reps<-data.frame(rep=rep(1:1000),
+                 max_of_p90s=replicate(1000, summarize_broken_fleet(fun=max)))
+
+# And plot the results
+ggplot(reps, aes(max_of_p90s)) +
+  geom_histogram(bins=30) +
+  geom_vline(xintercept = 690, color="red") +
+  xlab("Max of p90s")
+```
+
+Now we're off, but in the other direction.  But being conservative is generally a good practice when operating a large fleet.  Again it pays to consider the analytical task at hand.
+
+## Another danger zone: unequal sample sizes
+
+So far we've been examining ways to aggregate data that is cut up among several hosts, but another common problem is aggregating data that is arrayed in time.  Frequently you'll have the computational power to compute percentiles each hour of the day, but computing exact percentiles over a day or a week becomes intractable.
+
+If you wanted an estimate of the daily 90th percentile, your intuition might suggest averaging the hourly 90th percentiles.  If you can assume that your service latency doesn't change over the course of the day, this works out just fine.  
+
+Here's some code that simulates a day's worth of traffic, where traffic varies in a sinusoidal pattern (with some random noise) throughout the day.
+
+```{r}
+simulate_one_hour<-function(traffic, rate) {
+  data.frame(latency=rgamma(traffic, 3, 1/rate))
+}
+
+simulate_one_day_flat <- function(mean_rate=100) {
+  hourly_data<-data.frame(hour=0:23) %>%
+    group_by(hour) %>%
+    mutate(traffic_mu = 100000 * (sin(hour * 2 * pi / 24) + 1.1),
+           traffic = rnorm(1, mean=traffic_mu, sd = sqrt(traffic_mu)),
+           rate_mu = mean_rate,
+           rate = rnorm(1, mean=rate_mu, sd=rate_mu/10),
+           latency_data = map(traffic, simulate_one_hour, rate=rate))
+}
+```
+
+So now we can draw a sample and plot what traffic looks like,
+
+```{r}
+one_day <- simulate_one_day_flat()
+ggplot(one_day, aes(hour, traffic))+geom_line()+geom_point()
+```
+
+... and we can compute and plot the hourly 90th percentiles. 
+
+```{r}
+compute_hourly_p90s<-function(hourly_data) {
+  hourly_data %>%
+    unnest(latency_data) %>%
+    group_by(hour, traffic, rate) %>%
+    summarize(p90=quantile(latency, 0.9)) %>%
+    ungroup()
+}
+
+ggplot(compute_hourly_p90s(one_day), aes(hour, p90)) +
+  geom_line() + geom_point()
+```
+
+So there's some variation in the hourly 90th percentiles, but perhaps by averaging we can get a decent estimate of the true daily 90th percentile.  
+
+```{r}
+compute_true_daily_p90 <- function(hourly_data) {
+  p90<-hourly_data %>%
+    ungroup() %>%
+    unnest(latency_data) %>%
+    summarize(true_p90 = quantile(latency, 0.9))
+  as.numeric(p90[1,1])
+}
+
+compute_average_p90 <- function(hourly_data) {
+  p90<-hourly_data %>%
+    unnest(latency_data) %>%
+    group_by(hour, traffic, rate) %>%
+    summarize(p90=quantile(latency, 0.9)) %>%
+    ungroup() %>%
+    summarize(unweighted = mean(p90),
+              weighted = weighted.mean(p90, traffic))
+  as.numeric(p90)
+}
+compute_true_daily_p90(one_day)
+compute_average_p90(one_day)
+```
+
+It looks like averaging works out pretty well when all the hours are identical.  The weighted average should be closer to the true value.  Because traffic is varying throughout the day, we want to put less weight on the p90 from the trough and more on the peak.
+
+As before we can simulate drawing many, many days like this and examine the range of possible outcomes from this process.
+
+```{r}
+# Define a convenience function to do the work
+do_one_replication <- function(idx, simf, ...) {
+  one_day <- simf(...)
+  true_p90<-compute_true_daily_p90(one_day)
+  avg_p90s<-compute_average_p90(one_day)
+  result<-data.frame(idx=idx,
+                     true_p90 = true_p90, 
+                     unweighted = avg_p90s[1],
+                     weighted = avg_p90s[2])
+  return(result)
+}
+
+# Draw the replicates
+reps<-map_df(1:200, do_one_replication, simf=simulate_one_day_flat)
+
+# Reshape the data for faceted plotting
+to_plot<-reps %>%
+  select(-idx) %>%
+  gather(kind, value, -true_p90)
+
+# Plot faceted histograms
+ggplot(to_plot, aes(value-true_p90)) + geom_histogram(bins=30) + 
+  facet_wrap(~kind, ncol=1) + 
+  xlab("Difference between average and true 90th percentile")
+```
+
+Now we can compare the accuracy of our two averaging methods.  The weighted average has much less variability than the unweighted average.  This makes sense because the true daily 90th percentile is most strongly influenced by the hours with the most traffic, and this is also true of the weighted average.
+
+I'm actually surprised that neither of these histograms are centered at zero!  I need to think a bit more to see why even the weighted average should systematically underestimate the true daily 90th percentile. (As I write, it's the 4th of July and I want to go outside!)
+
+The assumption we made, that each hour that the same distribution of latency, is pretty unreasonable in practice.  Far more common is that latency varies throughout the day.  A common pattern is that latency will increase during times of heavy traffic as a service is put under more load than it can handle.  What happens with our strategy of averaging in that case?
+
+First let's examine what happens when there's a mild increase in latency at peak traffic.
+
+```{r}
+# Define a function that simulates a day of traffic with varying latency
+# rate_multipler controls how much the latency varies throghout the day
+simulate_one_day_varying <- function(rate_multiplier) {
+  hourly_data<-data.frame(hour=0:23) %>%
+    group_by(hour) %>%
+    mutate(traffic_mu = 100000 * (sin(hour * 2 * pi / 24) + 1.1),
+           traffic = rnorm(1, mean=traffic_mu, sd = sqrt(traffic_mu)),
+           # The average latency varies in sync with traffic
+           rate_mu = 100 * (sin(hour * 2 * pi / 24) * rate_multiplier + 1.1),
+           rate = rnorm(1, mean=rate_mu, sd=rate_mu/10),
+           latency_data = map(traffic, simulate_one_hour, rate=rate))
+}
+```
+
+So now we can draw a sample and plot the resulting hourly 90th percentiles.  Here I've made the point scale with the amount of traffic.  Low traffic (small points) are associated with lower latency.
+
+```{r}
+varying<-simulate_one_day_varying(rate_multiplier=1/5)
+
+ggplot(compute_hourly_p90s(varying), aes(hour, p90)) +
+  geom_point(aes(size=traffic)) + geom_line()
+```
+
+Let's see how averaging does with this data.
+
+```{r}
+# Draw the replicates
+reps<-map_df(1:200, do_one_replication, 
+             simf=simulate_one_day_varying, rate_multiplier=1/5)
+
+# Reshape the data for faceted plotting
+to_plot<-reps %>%
+  select(-idx) %>%
+  gather(kind, value, -true_p90)
+
+# Plot faceted histograms
+ggplot(to_plot, aes(value-true_p90)) + geom_histogram(bins=30) + 
+  facet_wrap(~kind, ncol=1) + 
+  xlab("Difference between average and true 90th percentile")
+```
+
+The unweighted average is pretty terrible, as we expected, but the weighted average is holding up ok.  What if we make the latency vary even more?
+
+```{r}
+varying<-simulate_one_day_varying(rate_multiplier=1)
+
+ggplot(compute_hourly_p90s(varying), aes(hour, p90)) +
+  geom_point(aes(size=traffic)) + geom_line()
+```
+
+
+```{r}
+# Draw the replicates
+reps<-map_df(1:200, do_one_replication, 
+             simf=simulate_one_day_varying, rate_multiplier=1)
+
+# Reshape the data for faceted plotting
+to_plot<-reps %>%
+  select(-idx) %>%
+  gather(kind, value, -true_p90)
+
+# Plot faceted histograms
+ggplot(to_plot, aes(value-true_p90)) + geom_histogram(bins=30) + 
+  facet_wrap(~kind, ncol=1) + 
+  xlab("Difference between average and true 90th percentile")
+```
+
+Now the unweighted average is very far off and even the weighted average is really starting to suffer.
+
+## Percentile ranks and histograms
+
+A nice way to sidestep this whole issue is to reason in terms of percentile ranks and not percentiles.  If you're willing to put a line (or lines) in the sand up front and say that certain latency thresholds are important -- if you think (for example) that 1,000ms is a key threshold, then for any subset of requests you can just record the number of requests and the number over 1,000ms.  Those subsets can be trivially combined to compute a combined percentile rank.  
+
+If you're not willing to draw those lines in the sand, and you can afford the storage, you can also keep track of (approximate) histograms which you can combine cheaply to compute (approximate) percentiles across fleets or over long spans of time.  
+
+## Conclusion
+
+I hope that I've given you some intuition about how the process of averaging summary statistics like percentiles works, when it's appropriate, and when it breaks down.  
+
+But more, I hope I've shown you how easy it is to simulate statistical processes in order to gain an understanding of whether and how they work.  Anytime a supposed expert (myself included) tells you what you can or can't do with your data, put on your skeptic's hat, code up your own simulations on your data, and see for yourself.  This is major part of how I taught myself statistical intuition, and I suspect it will work for you too.
