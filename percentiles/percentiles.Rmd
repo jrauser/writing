@@ -21,7 +21,7 @@ knitr::opts_chunk$set(echo = TRUE, cache=TRUE)
 
 From time to time I hear people say "You [can't](http://latencytipoftheday.blogspot.com/2014/06/latencytipoftheday-you-cant-average.html) [meaningfully](https://www.vividcortex.com/blog/why-percentiles-dont-work-the-way-you-think) [average](https://twitter.com/heinrichhartman/status/748355170040352768) [percentiles](http://www.circonus.com/problem-math/)."  This has always irritated me.  Last week I [said as much](https://twitter.com/danslimmon/status/748295758827315201) [on twitter](https://twitter.com/jrauser/status/748573025159655424).  
 
-This document is an attempt to explain my position.  It is also an attempt to teach statistical thinking by example, and to demonstrate using the R language for data analysis.  This document was written in RMarkdown, AND YOU CAN DOWNLOAD THE SOURCE HERE AND PLAY WITH IT YOURSELF.
+This document is an attempt to explain my position.  It is also an attempt to teach statistical thinking by example, and to demonstrate using the R language for data analysis.  This document was written in RMarkdown, and you can download the source [here](https://raw.githubusercontent.com/jrauser/writing/master/percentiles/percentiles.Rmd) and play with it yourself.
 
 If the authors linked above had said "In an operational context, averaging percentiles is a bad idea," or more simply, "Averaging percentiles is very dangerous," I would have no quarrel, but by making such extreme statements they shut down opportunities for statistical thinking, and [as someone who cares a great deal about statistical education](https://www.youtube.com/watch?v=5Dnw46eC-0o), that makes me sad.
 
