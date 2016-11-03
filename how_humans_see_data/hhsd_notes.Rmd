@@ -661,39 +661,51 @@ TODO: Show deseasonalizing too (usually easy and automatic if many seasonal cycl
 dat <- data.frame(x=seq(1,6*pi,length.out = 100))
 # Two series, noe of which varies with the square, the other linearly
 dat <- dat %>% 
-  mutate(y1=1.4+sin(x), 
-         y2=(1.1+sin(x))^2)
+  mutate(Dependency=1.4+sin(x), 
+         Service=(1.1+sin(x))^2)
 # Jitter the points
 dat <- dat %>%
-  mutate(y1=rnorm(length(y1), mean = y1, sd=y1/10),
-         y2=rnorm(length(y2), mean = y2, sd=y2^(2/3)/10))
+  mutate(Service=rnorm(length(x), mean = Service, sd=Service/10),
+         Dependency=rnorm(length(x), mean = Dependency, sd=Dependency^(2/3)/10))
 # Put in long format
 dat_l <- dat %>%
-  gather(var, value, y1, y2)
+  gather(var, value, -x)
 ```
 
 They move together, but what, preciscely is the nature of the relationship?
 
 ```{r}
+ggplot(dat_l, aes(x, value))+geom_line(color="white")+facet_wrap(~var, scales="free")
+preso_save("~/hhsd_images/ts_vs_scatter_facet.png")
+```
+
+```{r}
 ggplot(dat_l, aes(x, value, color=var))+geom_line()
+preso_save("~/hhsd_images/ts_vs_scatter_ts.png")
 ```
 
 A scatterplot is more revealing.
 
 ```{r}
-ggplot(dat, aes(y1, y2))+geom_point(color="white")
+ggplot(dat, aes(Dependency, Service)) + geom_point(color="white") + 
+  ylab("Some service's latency") + xlab("Its dependency")
+preso_save("~/hhsd_images/ts_vs_scatter_scatter.png")
 ```
 
 It's clear that the relationship isn't linear.
 
 ```{r}
-ggplot(dat, aes(y1, y2))+geom_point(color="white")+geom_smooth(method="lm")
+ggplot(dat, aes(Dependency, Service))+geom_point(color="white")+geom_smooth(method="lm") + 
+  ylab("Some service's latency") + xlab("Its dependency")
+preso_save("~/hhsd_images/ts_vs_scatter_lm.png")
 ```
 
 A loess fit looks nice.
 
 ```{r}
-ggplot(dat, aes(y1, y2))+geom_point(color="white")+geom_smooth(method="loess")
+ggplot(dat, aes(Dependency, Service))+geom_point(color="white")+geom_smooth(method="loess") + 
+  ylab("Some service's latency") + xlab("Its dependency")
+preso_save("~/hhsd_images/ts_vs_scatter_loess.png")
 ```
 
 
