@@ -20,6 +20,12 @@ set.seed(7777)
 ```
 
 
+# About this document
+
+This document contains all the code I used to generate the images for my presentation How Humans See Data, first presented at [Velocity Amsterdam 2016](http://conferences.oreilly.com/velocity/devops-web-performance-eu/public/schedule/detail/54354).  This document is not meant to stand alone -- it has very little explanatory text.  It is meant to be a reference for people who want to see how I made the plots from the presentation. 
+
+The source code is on github at [https://github.com/jrauser/writing/tree/master/how_humans_see_data](https://github.com/jrauser/writing/tree/master/how_humans_see_data).  The rendered document is available on rpubs at [http://rpubs.com/jrauser/hhsd_notes](http://rpubs.com/jrauser/hhsd_notes).
+
 # Setup
 
 First I set up a theme for presentations.  It uses white on black (good for large, dimly lit rooms), and lines and text that are too small/fine when rendered in a document, but which work well when rendered at 300dpi for the presnetation.  Note that I would usually not use white on black for documents, but I use this as the default theme throughout because there isn't an easy way (that I know of) to set the default color of a geom to something other than black.
