@@ -101,7 +101,7 @@ host_p90s<-replicate(10, quantile(simulate_one_host(), 0.9))
 host_p90s
 ```
 
-Some of them should be above the theoretical 532ms and others should be below.  Most of them should be closer to 532 then further away. And if we take the average of them, we get something close to 532.
+Some of them should be above the theoretical 532ms and others should be below.  Most of them should be closer to 532 than further away. And if we take the average of them, we get something close to 532.
 
 ```{r first_mean}
 mean(host_p90s)
